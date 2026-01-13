@@ -29,6 +29,15 @@ except ImportError:
     print("Execute: pip install selenium")
     sys.exit(1)
 
+# Webdriver Manager (opcional - baixa Chrome automaticamente)
+try:
+    from selenium.webdriver.chrome.service import Service
+    from webdriver_manager.chrome import ChromeDriverManager
+    WEBDRIVER_MANAGER_AVAILABLE = True
+except ImportError:
+    WEBDRIVER_MANAGER_AVAILABLE = False
+    # Não é fatal, apenas uma opção
+
 try:
     from bs4 import BeautifulSoup
     BS4_AVAILABLE = True
@@ -82,7 +91,7 @@ class URBSMonitor:
         )
     
     def create_selenium_driver(self):
-        """Cria driver Chrome com anti-detecção"""
+        """Cria driver Chrome com anti-detecção (tenta múltiplas opções)"""
         logging.info("🚀 Criando driver Selenium...")
         
         options = Options()
@@ -96,21 +105,77 @@ class URBSMonitor:
         options.add_argument('--window-size=1920,1080')
         options.add_argument('--disable-gpu')
         
-        try:
-            self.driver = webdriver.Chrome(options=options)
-            self.driver.set_page_load_timeout(30)
-            
-            # Remover propriedade webdriver
-            self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-                'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
-            })
-            
-            logging.info("✅ Driver criado com sucesso")
-            return True
+        # OPÇÃO 1: Tentar com webdriver-manager (melhor opção - automático)
+        if WEBDRIVER_MANAGER_AVAILABLE:
+            try:
+                logging.info("📦 Usando webdriver-manager (download automático)...")
+                service = Service(ChromeDriverManager().install())
+                self.driver = webdriver.Chrome(service=service, options=options)
+                self.driver.set_page_load_timeout(30)
+                
+                try:
+                    self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                        'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
+                    })
+                except:
+                    pass
+                
+                logging.info("✅ Driver criado com webdriver-manager")
+                return True
+            except Exception as e:
+                logging.warning(f"⚠️ webdriver-manager falhou: {e}")
         
-        except Exception as e:
-            logging.error(f"❌ Erro ao criar driver: {e}")
-            return False
+        # OPÇÃO 2: Tentar encontrar Chrome instalado
+        chrome_paths = [
+            '/usr/bin/google-chrome',
+            '/usr/bin/chromium',
+            '/usr/bin/chromium-browser',
+            '/snap/bin/chromium',
+            'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+            'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+        ]
+        
+        chrome_found = None
+        for path in chrome_paths:
+            if Path(path).exists():
+                chrome_found = path
+                logging.info(f"✅ Chrome encontrado: {path}")
+                options.binary_location = path
+                break
+        
+        if chrome_found:
+            try:
+                self.driver = webdriver.Chrome(options=options)
+                self.driver.set_page_load_timeout(30)
+                
+                try:
+                    self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                        'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined})'
+                    })
+                except:
+                    pass
+                
+                logging.info("✅ Driver criado com Chrome local")
+                return True
+            except Exception as e:
+                logging.error(f"❌ Erro ao criar driver: {e}")
+        
+        # Falhou
+        logging.error("")
+        logging.error("❌ NÃO FOI POSSÍVEL CRIAR O DRIVER SELENIUM")
+        logging.error("")
+        logging.error("💡 SOLUÇÕES:")
+        logging.error("")
+        logging.error("   OPÇÃO 1 (RECOMENDADA - AUTOMÁTICA):")
+        logging.error("      pip install webdriver-manager")
+        logging.error("")
+        logging.error("   OPÇÃO 2 (INSTALAR CHROME MANUALMENTE):")
+        logging.error("      Ubuntu/Debian: sudo apt-get install chromium-browser")
+        logging.error("      Fedora: sudo dnf install chromium")
+        logging.error("      Arch: sudo pacman -S chromium")
+        logging.error("      Windows: https://www.google.com/chrome/")
+        logging.error("")
+        return False
     
     def get_urbs_content(self) -> str:
         """Obtém conteúdo do site da URBS"""
