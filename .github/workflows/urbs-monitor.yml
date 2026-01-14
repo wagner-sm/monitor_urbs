@@ -30,13 +30,17 @@ jobs:
         run: |
           pip install selenium beautifulsoup4 webdriver-manager
       
-      - name: Run URBS Monitor
+      - name: Run URBS Monitor (with retry)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 15
+          max_attempts: 3
+          retry_wait_seconds: 20
+          command: python monitor_urbs.py
         env:
           GMAIL_USER: ${{ secrets.GMAIL_USER }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           EMAIL_RECIPIENTS: ${{ secrets.EMAIL_RECIPIENTS }}
-        run: |
-          python monitor_urbs.py
       
       - name: Commit changes
         run: |
