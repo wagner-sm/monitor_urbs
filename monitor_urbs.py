@@ -1,5 +1,6 @@
 """
-URBS Monitor - Versão Otimizada para GitHub Actions
+Multi-Site Monitor - Versão Otimizada para GitHub Actions
+Monitora múltiplos sites e envia notificações por email quando detecta mudanças
 """
 
 import os
@@ -11,6 +12,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+from typing import List, Dict, Optional
 
 LOCAL_TZ = ZoneInfo("America/Sao_Paulo")
 
@@ -32,9 +34,14 @@ from email.header import Header
 from email.utils import formataddr
 
 
-class URBSMonitor:
-
-    URBS_URL = "https://www.urbs.curitiba.pr.gov.br/transporte/boletim-de-transportes"
+class MultiSiteMonitor:
+    """Monitor para múltiplos sites"""
+    
+    # URLs dos sites - ADICIONE SEUS SITES AQUI
+    SITES = [
+        "https://www.urbs.curitiba.pr.gov.br/transporte/boletim-de-transportes",
+        "https://www.eueanatureza.com.br/ensaios_modelos"
+    ]
 
     def __init__(self, email_recipients, gmail_user, gmail_password):
         self.email_recipients = email_recipients
@@ -43,9 +50,7 @@ class URBSMonitor:
 
         self.data_dir = Path("data")
         self.data_dir.mkdir(exist_ok=True)
-        self.hash_file = self.data_dir / "urbs_hash.json"
-        self.content_file = self.data_dir / "urbs_content.txt"
-
+        
         self.driver = None
         self.setup_logging()
 
@@ -86,8 +91,8 @@ class URBSMonitor:
         options.add_argument("--mute-audio")
         options.add_argument("--window-size=1280,720")
         
-        # Estratégia de carregamento - CRÍTICO
-        options.page_load_strategy = "none"  # Mudado de 'eager' para 'none'
+        # Estratégia de carregamento
+        options.page_load_strategy = "none"
         
         # Desabilitar recursos pesados
         prefs = {
@@ -112,53 +117,61 @@ class URBSMonitor:
         service = Service(ChromeDriverManager().install())
         self.driver = webdriver.Chrome(service=service, options=options)
 
-        # Timeouts mais agressivos
+        # Timeouts
         self.driver.set_page_load_timeout(30)
         self.driver.set_script_timeout(30)
 
         logging.info("✅ Driver Selenium criado")
 
-    def get_urbs_content(self) -> str:
-        logging.info(f"🌐 Acessando {self.URBS_URL}")
+    def get_site_name(self, url: str) -> str:
+        """Extrai um nome simples da URL"""
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc
+        # Remove www. e pega o nome principal
+        name = domain.replace("www.", "").split(".")[0]
+        return name.upper()
+
+    def get_site_content(self, url: str) -> str:
+        """Obtém o conteúdo de um site específico"""
+        site_name = self.get_site_name(url)
+        logging.info(f"🌐 Acessando {site_name}: {url}")
 
         if not self.driver:
             self.create_selenium_driver()
 
-        # Usar get() sem esperar carregamento completo
-        self.driver.get(self.URBS_URL)
+        self.driver.get(url)
         
-        # Esperar apenas pelo DOM inicial (mais rápido)
+        # Esperar pelo body
         try:
             WebDriverWait(self.driver, 15).until(
                 EC.presence_of_element_located((By.TAG_NAME, "body"))
             )
-            logging.info("✅ Body detectado")
+            logging.info(f"✅ {site_name} - Body detectado")
         except TimeoutException:
-            logging.warning("⚠️ Timeout esperando body, continuando...")
+            logging.warning(f"⚠️ {site_name} - Timeout esperando body")
         
-        # Dar tempo para JavaScript carregar conteúdo dinâmico
+        # Tempo para JavaScript
         time.sleep(8)
         
-        # Tentar parar o carregamento da página
+        # Parar carregamento
         try:
             self.driver.execute_script("window.stop();")
-            logging.info("🛑 Carregamento parado manualmente")
         except:
             pass
         
         html = self.driver.page_source
         
-        # Validar se pegamos conteúdo útil
         if len(html) < 5000:
-            raise ValueError(f"HTML muito pequeno: {len(html)} bytes")
+            raise ValueError(f"{site_name}: HTML muito pequeno ({len(html)} bytes)")
         
-        logging.info(f"✅ Página carregada ({len(html)} chars)")
+        logging.info(f"✅ {site_name} - Página carregada ({len(html)} chars)")
         return self.extract_content(html)
 
     # ------------------------------------------------------------------
-    # CONTEÚDO
+    # EXTRAÇÃO DE CONTEÚDO
     # ------------------------------------------------------------------
     def extract_content(self, html: str) -> str:
+        """Extrai títulos (h1, h2, h3) do HTML"""
         if not html:
             return ""
 
@@ -168,25 +181,41 @@ class URBSMonitor:
         for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
             tag.decompose()
 
+        # Extrair títulos
         titles = []
         for h in soup.find_all(["h1", "h2", "h3"]):
             text = h.get_text(" ", strip=True)
             if len(text) >= 10:
                 titles.append(text)
-
+        
         return "\n".join(sorted(set(titles)))
 
+    # ------------------------------------------------------------------
+    # HASH E DETECÇÃO DE MUDANÇAS
+    # ------------------------------------------------------------------
     def calculate_hash(self, content: str) -> str:
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
-    def load_last_hash(self) -> str:
-        if not self.hash_file.exists():
+    def get_site_hash_file(self, url: str) -> Path:
+        """Retorna o arquivo de hash para um site específico"""
+        site_name = self.get_site_name(url)
+        return self.data_dir / f"{site_name.lower()}_hash.json"
+
+    def get_site_content_file(self, url: str) -> Path:
+        """Retorna o arquivo de conteúdo para um site específico"""
+        site_name = self.get_site_name(url)
+        return self.data_dir / f"{site_name.lower()}_content.txt"
+
+    def load_last_hash(self, url: str) -> str:
+        hash_file = self.get_site_hash_file(url)
+        if not hash_file.exists():
             return ""
-        with open(self.hash_file, "r") as f:
+        with open(hash_file, "r") as f:
             return json.load(f).get("hash", "")
 
-    def save_hash(self, content_hash: str):
-        with open(self.hash_file, "w") as f:
+    def save_hash(self, url: str, content_hash: str):
+        hash_file = self.get_site_hash_file(url)
+        with open(hash_file, "w") as f:
             json.dump(
                 {
                     "hash": content_hash,
@@ -196,68 +225,89 @@ class URBSMonitor:
                 indent=2,
             )
 
-    def save_content(self, content: str):
-        with open(self.content_file, "w", encoding="utf-8") as f:
+    def save_content(self, url: str, content: str):
+        content_file = self.get_site_content_file(url)
+        with open(content_file, "w", encoding="utf-8") as f:
             f.write(content)
 
-    def detect_change(self, content: str) -> bool:
-        if not content or len(content) < 50:  # Reduzido de 100 para 50
-            logging.warning(f"⚠️ Conteúdo inválido (tamanho: {len(content)})")
+    def detect_change(self, url: str, content: str) -> bool:
+        """Detecta se houve mudança no conteúdo de um site"""
+        site_name = self.get_site_name(url)
+        
+        if not content or len(content) < 50:
+            logging.warning(f"⚠️ {site_name} - Conteúdo inválido ({len(content)} chars)")
             return False
 
         new_hash = self.calculate_hash(content)
-        old_hash = self.load_last_hash()
+        old_hash = self.load_last_hash(url)
 
-        self.save_content(content)
+        self.save_content(url, content)
 
         if not old_hash:
-            self.save_hash(new_hash)
-            logging.info("🆕 Hash inicial salvo")
+            self.save_hash(url, new_hash)
+            logging.info(f"🆕 {site_name} - Hash inicial salvo")
             return False
 
         if new_hash == old_hash:
-            logging.info("✅ Nenhuma mudança detectada")
+            logging.info(f"✅ {site_name} - Nenhuma mudança detectada")
             return False
 
-        logging.info("🔔 MUDANÇA DETECTADA")
-        self.save_hash(new_hash)
+        logging.info(f"🔔 {site_name} - MUDANÇA DETECTADA")
+        self.save_hash(url, new_hash)
         return True
 
     # ------------------------------------------------------------------
     # EMAIL
     # ------------------------------------------------------------------
-    def send_email_notification(self):
-        logging.info("📧 Enviando email de notificação...")
+    def send_email_notification(self, changed_urls: List[str]):
+        """Envia email com notificação de mudanças"""
+        logging.info(f"📧 Enviando email para {len(changed_urls)} site(s) alterado(s)")
 
         msg = MIMEMultipart("alternative")
         msg["From"] = formataddr(
-            (str(Header("URBS Monitor", "utf-8")), self.gmail_user)
+            (str(Header("Multi-Site Monitor", "utf-8")), self.gmail_user)
         )
         msg["To"] = ", ".join(self.email_recipients)
-        msg["Subject"] = Header(
-            "🚨 Mudança Detectada no Boletim da URBS", "utf-8"
-        )
+        
+        # Título do email
+        if len(changed_urls) == 1:
+            site_name = self.get_site_name(changed_urls[0])
+            subject = f"🚨 Mudança Detectada - {site_name}"
+        else:
+            subject = f"🚨 {len(changed_urls)} Sites Atualizados"
+        
+        msg["Subject"] = Header(subject, "utf-8")
+
+        # Corpo do email
+        sites_html = ""
+        for url in changed_urls:
+            site_name = self.get_site_name(url)
+            sites_html += f"""
+            <div style="margin:15px 0; padding:15px; background:#f9f9f9; border-left:4px solid #1e88e5">
+                <h3 style="margin:0 0 10px 0; color:#1e88e5">{site_name}</h3>
+                <p style="margin:5px 0">
+                    <a href="{url}" style="color:#1e88e5">{url}</a>
+                </p>
+            </div>
+            """
 
         html = f"""
         <html>
         <body style="font-family: Arial, sans-serif; background:#f5f5f5;">
           <div style="max-width:600px;margin:auto;background:#ffffff;padding:20px;border-radius:8px">
-            <h2 style="color:#1e88e5;">🚨 Mudança Detectada</h2>
-            <p>O boletim de transportes da URBS foi atualizado.</p>
-            <ul>
+            <h2 style="color:#1e88e5;">🚨 Mudanças Detectadas</h2>
+            <p>Os seguintes sites foram atualizados:</p>
+            
+            {sites_html}
+            
+            <ul style="margin-top:20px">
               <li><b>Data/Hora:</b> {datetime.now(LOCAL_TZ).strftime('%d/%m/%Y %H:%M:%S')}</li>
-              <li><b>URL:</b> <a href="{self.URBS_URL}">{self.URBS_URL}</a></li>
+              <li><b>Sites monitorados:</b> {len(self.SITES)}</li>
+              <li><b>Sites alterados:</b> {len(changed_urls)}</li>
             </ul>
-            <p>
-              <a href="{self.URBS_URL}"
-                 style="display:inline-block;padding:12px 20px;
-                        background:#1e88e5;color:#fff;
-                        text-decoration:none;border-radius:5px">
-                 Acessar boletim
-              </a>
-            </p>
-            <hr>
-            <small>URBS Monitor • envio automático</small>
+            
+            <hr style="margin:20px 0">
+            <small style="color:#666">Multi-Site Monitor • Envio automático</small>
           </div>
         </body>
         </html>
@@ -281,22 +331,48 @@ class URBSMonitor:
     # ------------------------------------------------------------------
     def run(self):
         logging.info("=" * 60)
-        logging.info("🚀 URBS MONITOR - Iniciando")
+        logging.info(f"🚀 MULTI-SITE MONITOR - Monitorando {len(self.SITES)} site(s)")
         logging.info("=" * 60)
 
+        changed_urls = []
+        errors = []
+
         try:
-            content = self.get_urbs_content()
-            if not content:
-                raise RuntimeError("Conteúdo vazio")
+            for url in self.SITES:
+                site_name = self.get_site_name(url)
+                try:
+                    logging.info(f"\n📍 Verificando: {site_name}")
+                    
+                    content = self.get_site_content(url)
+                    
+                    if self.detect_change(url, content):
+                        changed_urls.append(url)
+                    
+                    # Pausa entre sites
+                    time.sleep(2)
+                    
+                except Exception as e:
+                    error_msg = f"{site_name}: {str(e)}"
+                    logging.error(f"❌ Erro em {error_msg}")
+                    errors.append(error_msg)
 
-            if self.detect_change(content):
-                self.send_email_notification()
+            # Enviar email se houver mudanças
+            if changed_urls:
+                self.send_email_notification(changed_urls)
+                logging.info(f"\n✅ Monitor concluído - {len(changed_urls)} mudança(s) detectada(s)")
+            else:
+                logging.info("\n✅ Monitor concluído - Nenhuma mudança detectada")
 
-            logging.info("✅ Monitor concluído")
+            # Reportar erros
+            if errors:
+                logging.warning(f"\n⚠️ {len(errors)} erro(s) encontrado(s):")
+                for error in errors:
+                    logging.warning(f"  - {error}")
+
             return True
 
         except Exception as e:
-            logging.error(f"❌ Erro: {e}", exc_info=True)
+            logging.error(f"❌ Erro crítico: {e}", exc_info=True)
             return False
 
         finally:
@@ -317,7 +393,7 @@ def main():
         print("❌ Variáveis de ambiente não configuradas")
         sys.exit(1)
 
-    monitor = URBSMonitor(
+    monitor = MultiSiteMonitor(
         email_recipients=email_recipients,
         gmail_user=gmail_user,
         gmail_password=gmail_password,
