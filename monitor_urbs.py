@@ -1,5 +1,5 @@
 """
-URBS Monitor - Versão Estável para GitHub Actions
+URBS Monitor - Versão Otimizada para GitHub Actions
 """
 
 import os
@@ -57,37 +57,64 @@ class URBSMonitor:
         )
 
     # ------------------------------------------------------------------
-    # SELENIUM
+    # SELENIUM - CONFIGURAÇÃO OTIMIZADA
     # ------------------------------------------------------------------
     def create_selenium_driver(self):
         logging.info("🚀 Criando driver Selenium...")
 
         options = Options()
+        
+        # Configurações essenciais para CI
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=1920,1080")
-
-        # 🔑 ESSENCIAL para CI
-        options.page_load_strategy = "eager"
-
-        # Menos consumo
-        options.add_experimental_option(
-            "prefs",
-            {"profile.managed_default_content_settings.images": 2},
-        )
-
+        options.add_argument("--disable-software-rasterizer")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-background-networking")
+        options.add_argument("--disable-background-timer-throttling")
+        options.add_argument("--disable-backgrounding-occluded-windows")
+        options.add_argument("--disable-breakpad")
+        options.add_argument("--disable-component-extensions-with-background-pages")
+        options.add_argument("--disable-features=TranslateUI,BlinkGenPropertyTrees")
+        options.add_argument("--disable-ipc-flooding-protection")
+        options.add_argument("--disable-renderer-backgrounding")
+        options.add_argument("--enable-features=NetworkService,NetworkServiceInProcess")
+        options.add_argument("--force-color-profile=srgb")
+        options.add_argument("--hide-scrollbars")
+        options.add_argument("--metrics-recording-only")
+        options.add_argument("--mute-audio")
+        options.add_argument("--window-size=1280,720")
+        
+        # Estratégia de carregamento - CRÍTICO
+        options.page_load_strategy = "none"  # Mudado de 'eager' para 'none'
+        
+        # Desabilitar recursos pesados
+        prefs = {
+            "profile.managed_default_content_settings.images": 2,
+            "profile.default_content_setting_values.notifications": 2,
+            "profile.managed_default_content_settings.stylesheets": 2,
+            "profile.managed_default_content_settings.cookies": 2,
+            "profile.managed_default_content_settings.javascript": 1,
+            "profile.managed_default_content_settings.plugins": 2,
+            "profile.managed_default_content_settings.popups": 2,
+            "profile.managed_default_content_settings.geolocation": 2,
+            "profile.managed_default_content_settings.media_stream": 2,
+        }
+        options.add_experimental_option("prefs", prefs)
+        
+        # User agent
         options.add_argument(
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "--user-agent=Mozilla/5.0 (X11; Linux x86_64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
 
         service = Service(ChromeDriverManager().install())
         self.driver = webdriver.Chrome(service=service, options=options)
 
-        self.driver.set_page_load_timeout(60)
-        self.driver.set_script_timeout(60)
+        # Timeouts mais agressivos
+        self.driver.set_page_load_timeout(30)
+        self.driver.set_script_timeout(30)
 
         logging.info("✅ Driver Selenium criado")
 
@@ -97,30 +124,67 @@ class URBSMonitor:
         if not self.driver:
             self.create_selenium_driver()
 
-        # 🔁 Retry automático
-        for attempt in range(2):
+        # Retry com backoff exponencial
+        max_attempts = 3
+        for attempt in range(max_attempts):
             try:
+                logging.info(f"📡 Tentativa {attempt + 1}/{max_attempts}")
+                
+                # Usar get() sem esperar carregamento completo
                 self.driver.get(self.URBS_URL)
-                break
+                
+                # Esperar apenas pelo DOM inicial (mais rápido)
+                try:
+                    WebDriverWait(self.driver, 15).until(
+                        EC.presence_of_element_located((By.TAG_NAME, "body"))
+                    )
+                    logging.info("✅ Body detectado")
+                except TimeoutException:
+                    logging.warning("⚠️ Timeout esperando body, continuando...")
+                
+                # Dar tempo para JavaScript carregar conteúdo dinâmico
+                # mas parar a renderização se necessário
+                time.sleep(8)
+                
+                # Tentar parar o carregamento da página
+                try:
+                    self.driver.execute_script("window.stop();")
+                    logging.info("🛑 Carregamento parado manualmente")
+                except:
+                    pass
+                
+                html = self.driver.page_source
+                
+                # Validar se pegamos conteúdo útil
+                if len(html) < 5000:
+                    raise ValueError(f"HTML muito pequeno: {len(html)} bytes")
+                
+                logging.info(f"✅ Página carregada ({len(html)} chars)")
+                return self.extract_content(html)
+                
             except Exception as e:
-                logging.warning(f"⚠️ Tentativa {attempt+1} falhou: {e}")
-                if attempt == 1:
+                logging.warning(f"⚠️ Tentativa {attempt + 1} falhou: {str(e)[:200]}")
+                
+                if attempt < max_attempts - 1:
+                    # Backoff exponencial: 5s, 10s
+                    wait_time = 5 * (attempt + 1)
+                    logging.info(f"⏳ Aguardando {wait_time}s antes de tentar novamente...")
+                    time.sleep(wait_time)
+                    
+                    # Recriar driver na última tentativa
+                    if attempt == max_attempts - 2:
+                        logging.info("🔄 Recriando driver para última tentativa...")
+                        if self.driver:
+                            try:
+                                self.driver.quit()
+                            except:
+                                pass
+                        self.driver = None
+                        self.create_selenium_driver()
+                else:
                     raise
-                time.sleep(5)
 
-        try:
-            WebDriverWait(self.driver, 30).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-        except TimeoutException:
-            logging.warning("⚠️ Timeout esperando body")
-
-        time.sleep(10)
-
-        html = self.driver.page_source
-        logging.info(f"✅ Página carregada ({len(html)} chars)")
-
-        return self.extract_content(html)
+        raise RuntimeError("Todas as tentativas falharam")
 
     # ------------------------------------------------------------------
     # CONTEÚDO
@@ -131,6 +195,7 @@ class URBSMonitor:
 
         soup = BeautifulSoup(html, "html.parser")
 
+        # Remover tags desnecessárias
         for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
             tag.decompose()
 
@@ -167,8 +232,8 @@ class URBSMonitor:
             f.write(content)
 
     def detect_change(self, content: str) -> bool:
-        if not content or len(content) < 100:
-            logging.warning("⚠️ Conteúdo inválido")
+        if not content or len(content) < 50:  # Reduzido de 100 para 50
+            logging.warning(f"⚠️ Conteúdo inválido (tamanho: {len(content)})")
             return False
 
         new_hash = self.calculate_hash(content)
@@ -262,13 +327,16 @@ class URBSMonitor:
             return True
 
         except Exception as e:
-            logging.error(f"❌ Erro: {e}")
+            logging.error(f"❌ Erro: {e}", exc_info=True)
             return False
 
         finally:
             if self.driver:
-                self.driver.quit()
-                logging.info("🔒 Driver Selenium fechado")
+                try:
+                    self.driver.quit()
+                    logging.info("🔒 Driver Selenium fechado")
+                except:
+                    pass
 
 
 def main():
