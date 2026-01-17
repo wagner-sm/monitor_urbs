@@ -40,8 +40,7 @@ class MultiSiteMonitor:
     # URLs dos sites - ADICIONE SEUS SITES AQUI
     SITES = [
         "https://www.urbs.curitiba.pr.gov.br/transporte/boletim-de-transportes",
-        "https://www.eueanatureza.com.br/ensaios_modelos",
-        "https://fotografiaparameninas.alboompro.com/portfolio/trabalhos"
+        "https://www.eueanatureza.com.br/ensaios_modelos"       
     ]
 
     def __init__(self, email_recipients, gmail_user, gmail_password):
