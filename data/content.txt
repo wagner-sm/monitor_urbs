@@ -37,7 +37,6 @@ Crystalline Skin
 Dancing In The Dark
 Digital Euphoria
 Flora Confidential
-Homebody Mood
 Leather in the Tropics
 Midnight's Soft Edge
 Morning Stories
@@ -52,6 +51,7 @@ The Linen & Light
 The Polished Shadow
 The Unhurried Hour
 The Untamed Coast
+Velvet Pulse
 White Pillow Dance
 === END ===
 
